@@ -1,0 +1,25 @@
+syntax = "proto3";
+
+package auth;
+
+import "proto/profile.proto";
+
+service AuthService {
+    rpc Login (LoginRequest) returns (LoginResponse);
+    rpc SignUp (SignUpRequest) returns (LoginResponse);
+}
+
+message LoginRequest {
+    string username = 1;
+    string password = 2;
+}
+
+message SignUpRequest {
+    string username = 1;
+    string password = 2;
+    profile.Profile profile = 3;
+}
+
+message LoginResponse {
+    string token = 1;
+} 

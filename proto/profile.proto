@@ -1,0 +1,25 @@
+syntax = "proto3";
+import "google/protobuf/empty.proto";
+
+package profile;
+
+service ProfileService {
+    rpc GetProfile (User) returns (Profile);
+    rpc EditProfile (Profile) returns (google.protobuf.Empty);
+}
+
+message User {
+    string username = 1;
+}
+
+message Date {
+    uint32 year = 1;
+    uint32 month = 2;
+    uint32 day = 3;
+}
+
+message Profile {
+    string bio = 1;
+    string city = 2;
+    Date date_of_birth = 3;
+}
