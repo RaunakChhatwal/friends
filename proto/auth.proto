@@ -5,8 +5,8 @@ package auth;
 import "proto/profile.proto";
 
 service AuthService {
-    rpc Login (LoginRequest) returns (LoginResponse);
-    rpc SignUp (SignUpRequest) returns (LoginResponse);
+    rpc Login (LoginRequest) returns (Token);
+    rpc SignUp (SignUpRequest) returns (Token);
 }
 
 message LoginRequest {
@@ -20,6 +20,6 @@ message SignUpRequest {
     profile.Profile profile = 3;
 }
 
-message LoginResponse {
+message Token {
     string token = 1;
 } 
