@@ -2,7 +2,7 @@ use crate::auth_impl::AuthenticatedService;
 use crate::entity;
 // pub use crate::profile::Profile;
 use crate::profile::*;
-use crate::util::conn;
+use crate::util::{conn, to_internal_db_err};
 use chrono::Datelike;
 use sea_orm::*;
 use tonic::{Request, Response, Status};
@@ -20,7 +20,7 @@ impl profile_service_server::ProfileService for ProfileService {
             .filter(entity::user::Column::Username.eq(&username))
             .one(&*conn)
             .await
-            .map_err(|_| Status::internal("Database error"))?
+            .map_err(to_internal_db_err)?
             .ok_or(Status::not_found(format!("Username {username} not found")))?
             .into();
 
@@ -33,16 +33,16 @@ impl profile_service_server::ProfileService for ProfileService {
             .filter(entity::user::Column::Id.eq(user.id))
             .one(&txn)
             .await
-            .map_err(|_| Status::internal("Database error"))?
+            .map_err(to_internal_db_err)?
             .unwrap_or_else(|| panic!("Expected profile due to foreign key constraint"))
             .into_active_model();
 
         let EditProfileRequest { bio: new_bio, city: new_city } = request.into_inner();
         profile.bio = Set(new_bio);
         profile.city = Set(new_city);
-        profile.update(&txn).await.map_err(|_| Status::internal("Database error"))?;
+        profile.update(&txn).await.map_err(to_internal_db_err)?;
 
-        txn.commit().await.map_err(|_| Status::internal("Database error"))?;
+        txn.commit().await.map_err(to_internal_db_err)?;
         return Ok(Response::new(()));
     }
 }
