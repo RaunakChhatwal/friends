@@ -6,6 +6,10 @@ use sea_orm::*;
 use std::{collections::HashMap, pin::Pin, sync::Arc, task::Poll};
 use tonic::{Request, Response, Status, body::BoxBody};
 
+lazy_static::lazy_static! {
+    static ref JWT_SECRET: String = std::env::var("JWT_SECRET").expect("JWT_SECRET must be set");
+}
+
 pub trait AuthenticatedService {
     fn authenticated_endpoints() -> Vec<&'static str>;
 
@@ -52,7 +56,7 @@ async fn auth_interceptor<Body>(request: &mut http::Request<Body>) -> Result<(),
     }
     let token = &header[prefix.len()..];
 
-    let key = jsonwebtoken::DecodingKey::from_secret("mcdonalds".as_bytes());
+    let key = jsonwebtoken::DecodingKey::from_secret(JWT_SECRET.as_bytes());
     let uuid = match jsonwebtoken::decode::<Claims>(token, &key, &Default::default()) {
         Ok(token_data) => token_data.claims.sub,
         Err(error) => return Err(Status::unauthenticated(error.to_string())),
@@ -157,7 +161,7 @@ impl auth_service_server::AuthService for AuthService {
             exp: (chrono::Utc::now() + chrono::Duration::hours(24)).timestamp() as usize,
         };
 
-        let key = jsonwebtoken::EncodingKey::from_secret("mcdonalds".as_bytes());
+        let key = jsonwebtoken::EncodingKey::from_secret(JWT_SECRET.as_bytes());
         let token = jsonwebtoken::encode(&Default::default(), &claims, &key)
             .map_err(|_| Status::internal("Failed to generate token"))?;
 
@@ -219,7 +223,7 @@ impl auth_service_server::AuthService for AuthService {
             exp: (chrono::Utc::now() + chrono::Duration::hours(24)).timestamp() as usize,
         };
 
-        let key = jsonwebtoken::EncodingKey::from_secret("mcdonalds".as_bytes());
+        let key = jsonwebtoken::EncodingKey::from_secret(JWT_SECRET.as_bytes());
         let token = jsonwebtoken::encode(&Default::default(), &claims, &key)
             .map_err(|_| Status::internal("Failed to generate token"))?;
 
