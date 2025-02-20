@@ -11,10 +11,12 @@ pub trait AuthenticatedService {
 
     fn lookup_extensions(
         extensions: &mut tonic::Extensions,
-    ) -> Result<(Arc<DatabaseTransaction>, entity::user::Model), Status> {
+    ) -> Result<(DatabaseTransaction, entity::user::Model), Status> {
         let txn = extensions
-            .remove()
-            .ok_or(Status::internal("Open transaction from auth middleware not found."))?;
+            .remove::<Arc<atomic_take::AtomicTake<_>>>()
+            .ok_or(Status::internal("Open transaction from auth middleware not found 1."))?
+            .take()
+            .ok_or(Status::internal("Open transaction from auth middleware not found 2."))?;
 
         let user = extensions
             .remove()
@@ -32,8 +34,8 @@ pub struct AuthMiddleware<S> {
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 struct Claims {
-    expiry: usize,
-    subject: uuid::Uuid,
+    exp: usize,      // expiry
+    sub: uuid::Uuid, // subject
 }
 
 async fn auth_interceptor<Body>(request: &mut http::Request<Body>) -> Result<(), Status> {
@@ -52,7 +54,7 @@ async fn auth_interceptor<Body>(request: &mut http::Request<Body>) -> Result<(),
 
     let key = jsonwebtoken::DecodingKey::from_secret("mcdonalds".as_bytes());
     let uuid = match jsonwebtoken::decode::<Claims>(token, &key, &Default::default()) {
-        Ok(token_data) => token_data.claims.subject,
+        Ok(token_data) => token_data.claims.sub,
         Err(error) => return Err(Status::unauthenticated(error.to_string())),
     };
 
@@ -64,7 +66,8 @@ async fn auth_interceptor<Body>(request: &mut http::Request<Body>) -> Result<(),
         .map_err(|_| Status::internal("Database error"))?
         .ok_or(Status::not_found("Account not found"))?;
 
-    request.extensions_mut().insert(Arc::new(txn)); // because Extensions::insert requires Clone
+    let txn_extension = Arc::new(atomic_take::AtomicTake::new(txn)); // because Extensions::insert requires Clone and Send
+    request.extensions_mut().insert(txn_extension);
     request.extensions_mut().insert(user);
     return Ok(());
 }
@@ -85,7 +88,7 @@ where
 
     fn call(&mut self, mut request: http::Request<Payload>) -> Self::Future {
         let mut authenticate = false;
-        if let [service, endpoint] = request.uri().path().split('/').collect::<Vec<_>>()[..] {
+        if let ["", service, endpoint] = request.uri().path().split('/').collect::<Vec<_>>()[..] {
             if let Some(endpoints) = self.authenticated_endpoints.get(service) {
                 if endpoints.contains(&endpoint) {
                     authenticate = true;
@@ -150,8 +153,8 @@ impl auth_service_server::AuthService for AuthService {
 
         // Generate JWT token
         let claims = Claims {
-            subject: uuid,
-            expiry: (chrono::Utc::now() + chrono::Duration::hours(24)).timestamp() as usize,
+            sub: uuid,
+            exp: (chrono::Utc::now() + chrono::Duration::hours(24)).timestamp() as usize,
         };
 
         let key = jsonwebtoken::EncodingKey::from_secret("mcdonalds".as_bytes());
@@ -187,38 +190,33 @@ impl auth_service_server::AuthService for AuthService {
             .map_err(|_| Status::internal("Task join error"))?
             .map_err(|_| Status::internal("Failed to hash password"))?;
 
-        // Create profile first since user has a foreign key to it
-        let profile = entity::profile::ActiveModel {
-            bio: Set(bio),
-            date_of_birth: Set(date_of_birth),
-            city: Set(city),
-            ..Default::default()
-        };
-        let profile = profile.insert(&txn).await.map_err(|_| Status::internal("Database error"))?;
-
-        // Create user with reference to profile
+        // Create user first since profile now references it
         let uuid = uuid::Uuid::new_v4();
         let user = entity::user::ActiveModel {
             uuid: Set(uuid),
             username: Set(username),
             password_hash: Set(password_hash),
-            profile: Set(profile.id),
             ..Default::default()
         };
         let user = user.insert(&txn).await.map_err(|_| Status::internal("Database error"))?;
 
-        // Update profile with reference back to user
-        let mut profile: entity::profile::ActiveModel = profile.into();
-        profile.user = Set(user.id);
-        profile.update(&txn).await.map_err(|_| Status::internal("Database error"))?;
+        // Create profile with reference to user
+        let profile = entity::profile::ActiveModel {
+            bio: Set(bio),
+            date_of_birth: Set(date_of_birth),
+            city: Set(city),
+            user: Set(user.id),
+            ..Default::default()
+        };
+        profile.insert(&txn).await.map_err(|_| Status::internal("Database error"))?;
 
         // Commit transaction
         txn.commit().await.map_err(|_| Status::internal("Database error"))?;
 
         // Generate JWT token
         let claims = Claims {
-            subject: uuid,
-            expiry: (chrono::Utc::now() + chrono::Duration::hours(24)).timestamp() as usize,
+            sub: uuid,
+            exp: (chrono::Utc::now() + chrono::Duration::hours(24)).timestamp() as usize,
         };
 
         let key = jsonwebtoken::EncodingKey::from_secret("mcdonalds".as_bytes());

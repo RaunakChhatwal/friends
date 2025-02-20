@@ -27,21 +27,22 @@ impl profile_service_server::ProfileService for ProfileService {
         Ok(Response::new(profile))
     }
 
-    async fn edit_profile(&self, mut request: Request<Profile>) -> TonicResult<()> {
+    async fn edit_profile(&self, mut request: Request<EditProfileRequest>) -> TonicResult<()> {
         let (txn, user) = Self::lookup_extensions(request.extensions_mut())?;
         let mut profile = entity::user::Entity::find_related()
             .filter(entity::user::Column::Id.eq(user.id))
-            .one(&*txn)
+            .one(&txn)
             .await
             .map_err(|_| Status::internal("Database error"))?
             .unwrap_or_else(|| panic!("Expected profile due to foreign key constraint"))
             .into_active_model();
 
-        let Profile { bio: new_bio, city: new_city, .. } = request.into_inner();
+        let EditProfileRequest { bio: new_bio, city: new_city } = request.into_inner();
         profile.bio = Set(new_bio);
         profile.city = Set(new_city);
-        profile.update(&*txn).await.map_err(|_| Status::internal("Database error"))?;
+        profile.update(&txn).await.map_err(|_| Status::internal("Database error"))?;
 
+        txn.commit().await.map_err(|_| Status::internal("Database error"))?;
         return Ok(Response::new(()));
     }
 }

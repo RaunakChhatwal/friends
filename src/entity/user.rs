@@ -12,19 +12,11 @@ pub struct Model {
     #[sea_orm(unique)]
     pub username: String,
     pub password_hash: String,
-    #[sea_orm(unique)]
-    pub profile: i32,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
 pub enum Relation {
-    #[sea_orm(
-        belongs_to = "super::profile::Entity",
-        from = "Column::Profile",
-        to = "super::profile::Column::Id",
-        on_update = "NoAction",
-        on_delete = "Cascade"
-    )]
+    #[sea_orm(has_one = "super::profile::Entity")]
     Profile,
 }
 

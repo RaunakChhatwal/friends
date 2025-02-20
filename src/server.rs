@@ -15,6 +15,25 @@ use std::{collections::HashMap, sync::Arc};
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    let env_filter = tracing_subscriber::EnvFilter::from_default_env()
+        .add_directive(tracing::Level::INFO.into())
+        .add_directive("tower_http=debug".parse()?)
+        .add_directive("friends=debug".parse()?)
+        .add_directive("sqlx=error".parse()?)
+        .add_directive("sea_orm=error".parse()?);
+
+    // Initialize the tracing subscriber
+    tracing_subscriber::fmt()
+        .with_env_filter(env_filter)
+        .with_thread_ids(true)
+        .with_thread_names(true)
+        .with_file(true)
+        .with_line_number(true)
+        .with_target(true)
+        .init();
+
+    tracing::info!("Starting Friends server...");
+
     let address = "0.0.0.0:50051".parse()?;
 
     let profile_service = ProfileServiceServer::new(profile_impl::ProfileService::default());

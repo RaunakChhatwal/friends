@@ -6,12 +6,6 @@ pub struct Migration;
 #[async_trait::async_trait]
 impl MigrationTrait for Migration {
     async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
-        let mut profiles_foreign_key = ForeignKey::create()
-            .from(User::Table, User::Profile)
-            .to(Profile::Table, Profile::Id)
-            .on_delete(ForeignKeyAction::Cascade)
-            .to_owned();
-
         let users = Table::create()
             .table(User::Table)
             .if_not_exists()
@@ -19,8 +13,6 @@ impl MigrationTrait for Migration {
             .col(uuid_uniq(User::UUID))
             .col(string_uniq(User::Username))
             .col(string(User::PasswordHash))
-            .col(integer_uniq(User::Profile))
-            .foreign_key(&mut profiles_foreign_key)
             .to_owned();
 
         let idx_users_username = Index::create()
@@ -64,7 +56,6 @@ enum User {
     UUID,
     Username,
     PasswordHash,
-    Profile,
 }
 
 #[derive(DeriveIden)]

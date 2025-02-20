@@ -5,7 +5,7 @@ package profile;
 
 service ProfileService {
     rpc GetProfile (User) returns (Profile);
-    rpc EditProfile (Profile) returns (google.protobuf.Empty);
+    rpc EditProfile (EditProfileRequest) returns (google.protobuf.Empty);
 }
 
 message User {
@@ -22,4 +22,9 @@ message Profile {
     string bio = 1;
     string city = 2;
     Date date_of_birth = 3;
+}
+
+message EditProfileRequest {
+    string bio = 1;
+    string city = 2;
 }
