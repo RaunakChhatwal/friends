@@ -25,6 +25,8 @@ message Profile {
 }
 
 message EditProfileRequest {
-    string bio = 1;
-    string city = 2;
+    oneof update {
+        string bio = 1;
+        string city = 2;
+    }
 }

@@ -33,19 +33,22 @@ impl profile_service_server::ProfileService for ProfileService {
 
     async fn edit_profile(&self, mut request: Request<EditProfileRequest>) -> TonicResult<()> {
         let (txn, user) = crate::auth_impl::lookup_extensions(request.extensions_mut())?;
+
         let mut profile = entity::user::Entity::find_related()
             .filter(entity::user::Column::Id.eq(user.id))
             .one(&txn)
             .await
             .map_err(to_internal_db_err)?
-            .unwrap_or_else(|| panic!("Expected profile due to foreign key constraint"))
+            .expect("Expected profile due to foreign key constraint") // panic on constraint violation
             .into_active_model();
 
-        let EditProfileRequest { bio: new_bio, city: new_city } = request.into_inner();
-        profile.bio = Set(new_bio);
-        profile.city = Set(new_city);
-        profile.update(&txn).await.map_err(to_internal_db_err)?;
+        match request.into_inner().update {
+            Some(edit_profile_request::Update::Bio(new_bio)) => profile.bio = Set(new_bio),
+            Some(edit_profile_request::Update::City(new_city)) => profile.city = Set(new_city),
+            None => return Err(Status::invalid_argument("Either bio or city must be provided")),
+        }
 
+        profile.update(&txn).await.map_err(to_internal_db_err)?;
         txn.commit().await.map_err(to_internal_db_err)?;
         return Ok(Response::new(()));
     }
