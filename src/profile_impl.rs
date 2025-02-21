@@ -1,6 +1,4 @@
-use crate::auth_impl::AuthenticatedService;
 use crate::entity;
-// pub use crate::profile::Profile;
 use crate::profile::*;
 use crate::util::{conn, to_internal_db_err};
 use chrono::Datelike;
@@ -12,12 +10,18 @@ type TonicResult<T> = Result<Response<T>, Status>;
 #[derive(Default)]
 pub struct ProfileService;
 
+impl crate::auth_impl::AuthenticatedEndpoints for ProfileService {
+    fn authenticated_endpoints() -> Vec<&'static str> {
+        vec!["EditProfile"]
+    }
+}
+
 #[tonic::async_trait]
 impl profile_service_server::ProfileService for ProfileService {
     async fn get_profile(&self, request: Request<User>) -> TonicResult<Profile> {
         let username = request.into_inner().username;
         let profile = entity::user::Entity::find_related()
-            .filter(entity::user::Column::Username.eq(&username))
+            .filter(entity::user::Column::Username.eq(username.trim()))
             .one(&*conn)
             .await
             .map_err(to_internal_db_err)?
@@ -28,7 +32,7 @@ impl profile_service_server::ProfileService for ProfileService {
     }
 
     async fn edit_profile(&self, mut request: Request<EditProfileRequest>) -> TonicResult<()> {
-        let (txn, user) = Self::lookup_extensions(request.extensions_mut())?;
+        let (txn, user) = crate::auth_impl::lookup_extensions(request.extensions_mut())?;
         let mut profile = entity::user::Entity::find_related()
             .filter(entity::user::Column::Id.eq(user.id))
             .one(&txn)
@@ -44,12 +48,6 @@ impl profile_service_server::ProfileService for ProfileService {
 
         txn.commit().await.map_err(to_internal_db_err)?;
         return Ok(Response::new(()));
-    }
-}
-
-impl AuthenticatedService for ProfileService {
-    fn authenticated_endpoints() -> Vec<&'static str> {
-        vec!["EditProfile"]
     }
 }
 

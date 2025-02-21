@@ -8,10 +8,34 @@ mod util;
 include!("mod.rs");
 
 use anyhow::Result;
-use auth::auth_service_server::AuthServiceServer;
-use auth_impl::AuthenticatedService;
-use profile::profile_service_server::ProfileServiceServer;
-use std::{collections::HashMap, sync::Arc};
+
+macro_rules! add_services {
+    ($server:ident, [$((
+        $package:ident :: $service_server:ident :: $ServiceServer:ident,
+        $service_impl:ident :: $Service:ident
+    )),*]) => {{
+        let mut authenticated_endpoints = ::std::collections::HashMap::new();
+        $(
+            let endpoints = <$service_impl::$Service as auth_impl::AuthenticatedEndpoints>
+                ::authenticated_endpoints();
+            if !endpoints.is_empty() {
+                authenticated_endpoints.insert($package::$service_server::SERVICE_NAME, endpoints);
+            }
+        )*
+
+        let auth_layer = auth_impl::AuthLayer
+            { authenticated_endpoints: ::std::sync::Arc::new(authenticated_endpoints) };
+        let mut server = $server.layer(tower::ServiceBuilder::new().layer(auth_layer).into_inner());
+
+        $(
+            let service =
+                $package::$service_server::$ServiceServer::new($service_impl::$Service::default());
+            let server = server.add_service(service);
+        )*
+
+        server
+    }};
+}
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -25,8 +49,6 @@ async fn main() -> Result<()> {
     // Initialize the tracing subscriber
     tracing_subscriber::fmt()
         .with_env_filter(env_filter)
-        .with_thread_ids(true)
-        .with_thread_names(true)
         .with_file(true)
         .with_line_number(true)
         .with_target(true)
@@ -36,20 +58,14 @@ async fn main() -> Result<()> {
 
     let address = "0.0.0.0:50051".parse()?;
 
-    let profile_service = ProfileServiceServer::new(profile_impl::ProfileService::default());
-    let auth_service = AuthServiceServer::new(auth_impl::AuthService::default());
+    let server = tonic::transport::Server::builder();
+    let server = add_services!(
+        server,
+        [
+            (auth::auth_service_server::AuthServiceServer, auth_impl::AuthService),
+            (profile::profile_service_server::ProfileServiceServer, profile_impl::ProfileService)
+        ]
+    );
 
-    let mut authenticated_endpoints = HashMap::new();
-    authenticated_endpoints
-        .insert("profile.ProfileService", profile_impl::ProfileService::authenticated_endpoints());
-    let auth_layer =
-        auth_impl::AuthLayer { authenticated_endpoints: Arc::new(authenticated_endpoints) };
-
-    tonic::transport::Server::builder()
-        .layer(tower::ServiceBuilder::new().layer(auth_layer).into_inner())
-        .add_service(profile_service)
-        .add_service(auth_service)
-        .serve(address)
-        .await
-        .map_err(Into::into)
+    server.serve(address).await.map_err(Into::into)
 }
