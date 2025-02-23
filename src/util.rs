@@ -8,7 +8,8 @@ macro_rules! internal {
 }
 
 fn connect_to_database() -> DatabaseConnection {
-    let future = Database::connect(format!("sqlite://data.db?mode=rwc"));
+    let database_url = std::env::var("DATABASE_URL").unwrap_or("sqlite://data.db?mode=rwc".into());
+    let future = Database::connect(database_url);
     futures::executor::block_on(future).expect("Failed to connect to database")
 }
 

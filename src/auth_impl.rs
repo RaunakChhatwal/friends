@@ -1,140 +1,83 @@
 use crate::auth::*;
 use crate::entity;
 use crate::internal;
+use crate::middleware::{AuthenticatedEndpoints, Claims, JWT_SECRET};
 use crate::profile::*;
 use crate::util::{conn, to_internal_db_err};
-use atomic_take::AtomicTake;
+use regex::Regex;
 use sea_orm::*;
-use std::{collections::HashMap, pin::Pin, sync::Arc, task::Poll};
-use tonic::{Request, Response, Status, body::BoxBody};
-
-lazy_static::lazy_static! {
-    static ref JWT_SECRET: String = std::env::var("JWT_SECRET").expect("JWT_SECRET must be set");
-}
-
-pub trait AuthenticatedEndpoints {
-    fn authenticated_endpoints() -> Vec<&'static str> {
-        vec![]
-    }
-}
-
-pub fn lookup_extensions(
-    extensions: &mut tonic::Extensions,
-) -> Result<(DatabaseTransaction, entity::user::Model), Status> {
-    let txn = extensions
-        .remove::<Arc<AtomicTake<_>>>()
-        .as_ref()
-        .map(AsRef::as_ref)
-        .and_then(AtomicTake::take)
-        .ok_or(internal!("Resource from middleware not found"))?;
-
-    let user = extensions.remove().ok_or(internal!("Resource from middleware not found"))?;
-
-    Ok((txn, user))
-}
-
-#[derive(Clone)]
-pub struct AuthMiddleware<S> {
-    authenticated_endpoints: Arc<HashMap<&'static str, Vec<&'static str>>>,
-    inner: Arc<std::sync::Mutex<S>>,
-}
-
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
-struct Claims {
-    exp: usize,      // expiry
-    sub: uuid::Uuid, // subject
-}
-
-async fn auth_interceptor<Body>(request: &mut http::Request<Body>) -> Result<(), Status> {
-    let header = request
-        .headers()
-        .get("authorization")
-        .ok_or(Status::unauthenticated("Missing authorization header"))?
-        .to_str()
-        .map_err(|_| Status::unauthenticated("Invalid bearer token"))?;
-
-    let prefix = "Bearer ";
-    if !header.starts_with(prefix) {
-        return Err(Status::unauthenticated("Invalid bearer token"));
-    }
-    let token = &header[prefix.len()..];
-
-    let key = jsonwebtoken::DecodingKey::from_secret(JWT_SECRET.as_bytes());
-    let uuid = match jsonwebtoken::decode::<Claims>(token, &key, &Default::default()) {
-        Ok(token_data) => token_data.claims.sub,
-        Err(error) => return Err(Status::unauthenticated(error.to_string())),
-    };
-
-    let txn = conn.begin().await.map_err(to_internal_db_err)?;
-    let user = entity::user::Entity::find()
-        .filter(entity::user::Column::Uuid.eq(uuid))
-        .one(&txn)
-        .await
-        .map_err(to_internal_db_err)?
-        .ok_or(Status::not_found("Account not found"))?;
-
-    let txn_extension = Arc::new(AtomicTake::new(txn)); // because Extensions::insert requires Clone and Send
-    request.extensions_mut().insert(txn_extension);
-    request.extensions_mut().insert(user);
-    return Ok(());
-}
-
-impl<S, Payload> tower::Service<http::Request<Payload>> for AuthMiddleware<S>
-where
-    S: tower::Service<http::Request<Payload>, Response = http::Response<BoxBody>> + Send + 'static,
-    S::Future: Send + 'static,
-    Payload: Send + 'static,
-{
-    type Response = S::Response;
-    type Error = S::Error;
-    type Future = Pin<Box<dyn Future<Output = Result<S::Response, S::Error>> + Send + 'static>>;
-
-    fn poll_ready(&mut self, cx: &mut std::task::Context<'_>) -> Poll<Result<(), Self::Error>> {
-        self.inner.lock().unwrap().poll_ready(cx)
-    }
-
-    fn call(&mut self, mut request: http::Request<Payload>) -> Self::Future {
-        let mut authenticate = false;
-        if let ["", service, endpoint] = request.uri().path().split('/').collect::<Vec<_>>()[..] {
-            if let Some(endpoints) = self.authenticated_endpoints.get(service) {
-                if endpoints.contains(&endpoint) {
-                    authenticate = true;
-                }
-            }
-        };
-
-        let inner = Arc::clone(&self.inner);
-        Box::pin(async move {
-            if authenticate && let Err(denial) = auth_interceptor(&mut request).await {
-                return Ok(denial.into_http());
-            }
-
-            let future = inner.lock().unwrap().call(request); // don't await while lock held
-            future.await
-        })
-    }
-}
-
-#[derive(Clone)]
-pub struct AuthLayer {
-    pub authenticated_endpoints: Arc<HashMap<&'static str, Vec<&'static str>>>,
-}
-
-impl<S> tower::Layer<S> for AuthLayer {
-    type Service = AuthMiddleware<S>;
-
-    fn layer(&self, service: S) -> Self::Service {
-        AuthMiddleware {
-            authenticated_endpoints: Arc::clone(&self.authenticated_endpoints),
-            inner: Arc::new(std::sync::Mutex::new(service)),
-        }
-    }
-}
+use tonic::{Request, Response, Status};
 
 #[derive(Default)]
 pub struct AuthService;
 
 impl AuthenticatedEndpoints for AuthService {}
+
+fn validate_username(username: &str) -> Result<(), Status> {
+    if username.len() < 3 || username.len() > 64 {
+        return Err(Status::invalid_argument("Username must be between 3 and 30 characters long"));
+    }
+
+    let regex = Regex::new(r"^[a-zA-Z0-9_-]+$").expect("Invalid regex");
+    if !regex.is_match(username) {
+        let message = "Username may only contain letters, numbers, underscores, and hyphens";
+        return Err(Status::invalid_argument(message));
+    }
+
+    return Ok(());
+}
+
+fn validate_password(password: &str) -> Result<(), Status> {
+    if password.len() < 8 {
+        return Err(Status::invalid_argument("Password must be between 8 and 72 characters long"));
+    }
+
+    if password.chars().all(|chr| chr.is_ascii_lowercase()) {
+        let message = "Password must contain at least one uppercase letter";
+        return Err(Status::invalid_argument(message));
+    }
+
+    if password.chars().all(|chr| chr.is_ascii_uppercase()) {
+        let message = "Password must contain at least one lowercase letter";
+        return Err(Status::invalid_argument(message));
+    }
+
+    if !password.chars().any(|chr| chr.is_ascii_digit()) {
+        return Err(Status::invalid_argument("Password must contain at least one number"));
+    }
+
+    if password.contains(char::is_whitespace) {
+        return Err(Status::invalid_argument("Password cannot contain whitespace"));
+    }
+
+    return Ok(());
+}
+
+fn validate_profile(
+    profile: Option<Profile>,
+) -> Result<(String, String, chrono::NaiveDate), Status> {
+    let Some(Profile { date_of_birth, bio, city }) = profile else {
+        return Err(Status::invalid_argument("Profile is required"));
+    };
+
+    let Some(Date { year, month, day }) = date_of_birth else {
+        return Err(Status::invalid_argument("Date of birth is required"));
+    };
+
+    let date_of_birth = chrono::NaiveDate::from_ymd_opt(year as i32, month, day)
+        .ok_or(Status::invalid_argument("Invalid date of birth"))?;
+
+    let today = chrono::Utc::now().naive_utc().date();
+    let age = today
+        .years_since(date_of_birth)
+        .ok_or(Status::invalid_argument("Invalid date of birth: cannot be in the future"))?;
+
+    if age < 13 {
+        return Err(Status::invalid_argument("User must be at least 13 years old"));
+    }
+
+    Ok((bio, city, date_of_birth))
+}
 
 #[tonic::async_trait]
 impl auth_service_server::AuthService for AuthService {
@@ -177,6 +120,8 @@ impl auth_service_server::AuthService for AuthService {
         let SignUpRequest { username, password, profile } = request.into_inner();
 
         let username = username.trim();
+        validate_username(username)?;
+        validate_password(password.trim())?;
         let (bio, city, date_of_birth) = validate_profile(profile)?;
 
         // Start a transaction since we need to create both user and profile
@@ -235,30 +180,4 @@ impl auth_service_server::AuthService for AuthService {
 
         Ok(Response::new(Token { token }))
     }
-}
-
-fn validate_profile(
-    profile: Option<Profile>,
-) -> Result<(String, String, chrono::NaiveDate), Status> {
-    let Some(Profile { date_of_birth, bio, city }) = profile else {
-        return Err(Status::invalid_argument("Profile is required"));
-    };
-
-    let Some(Date { year, month, day }) = date_of_birth else {
-        return Err(Status::invalid_argument("Date of birth is required"));
-    };
-
-    let date_of_birth = chrono::NaiveDate::from_ymd_opt(year as i32, month, day)
-        .ok_or(Status::invalid_argument("Invalid date of birth"))?;
-
-    let today = chrono::Utc::now().naive_utc().date();
-    let age = today
-        .years_since(date_of_birth)
-        .ok_or(Status::invalid_argument("Invalid date of birth: cannot be in the future"))?;
-
-    if age < 13 {
-        return Err(Status::permission_denied("User must be at least 13 years old"));
-    }
-
-    Ok((bio, city, date_of_birth))
 }

@@ -3,27 +3,29 @@
 mod auth_impl;
 #[allow(warnings)]
 mod entity;
+mod middleware;
 mod profile_impl;
 mod util;
 include!("mod.rs");
 
 use anyhow::Result;
+use tracing_appender::rolling::{RollingFileAppender, Rotation};
 
 macro_rules! add_services {
-    ($server:ident, [$((
+    ($server:expr, [$((
         $package:ident :: $service_server:ident :: $ServiceServer:ident,
         $service_impl:ident :: $Service:ident
     )),*]) => {{
         let mut authenticated_endpoints = ::std::collections::HashMap::new();
         $(
-            let endpoints = <$service_impl::$Service as auth_impl::AuthenticatedEndpoints>
+            let endpoints = <$service_impl::$Service as middleware::AuthenticatedEndpoints>
                 ::authenticated_endpoints();
             if !endpoints.is_empty() {
                 authenticated_endpoints.insert($package::$service_server::SERVICE_NAME, endpoints);
             }
         )*
 
-        let auth_layer = auth_impl::AuthLayer
+        let auth_layer = middleware::AuthLayer
             { authenticated_endpoints: ::std::sync::Arc::new(authenticated_endpoints) };
         let mut server = $server.layer(tower::ServiceBuilder::new().layer(auth_layer).into_inner());
 
@@ -46,26 +48,30 @@ async fn main() -> Result<()> {
         .add_directive("sqlx=error".parse()?)
         .add_directive("sea_orm=error".parse()?);
 
-    // Initialize the tracing subscriber
-    tracing_subscriber::fmt()
+    // Initialize the tracing subscriber with both console and file outputs
+    let builder = tracing_subscriber::fmt()
         .with_env_filter(env_filter)
         .with_file(true)
         .with_line_number(true)
-        .with_target(true)
-        .init();
+        .with_target(true);
 
-    tracing::info!("Starting Friends server...");
+    if let Ok(log_dir) = std::env::var("LOG_DIR") {
+        let file_appender = RollingFileAppender::new(Rotation::NEVER, log_dir, "logs");
+        builder.with_writer(file_appender).init();
+    } else {
+        builder.init();
+    }
 
-    let address = "0.0.0.0:50051".parse()?;
+    tracing::info!("Starting server...");
 
-    let server = tonic::transport::Server::builder();
     let server = add_services!(
-        server,
+        tonic::transport::Server::builder(),
         [
             (auth::auth_service_server::AuthServiceServer, auth_impl::AuthService),
             (profile::profile_service_server::ProfileServiceServer, profile_impl::ProfileService)
         ]
     );
 
+    let address = format!("0.0.0.0:{}", std::env::var("PORT").unwrap_or("50051".into())).parse()?;
     server.serve(address).await.map_err(Into::into)
 }

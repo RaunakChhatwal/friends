@@ -25,7 +25,7 @@ message Profile {
 }
 
 message EditProfileRequest {
-    oneof update {
+    oneof update {  // TODO: change to field
         string bio = 1;
         string city = 2;
     }

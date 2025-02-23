@@ -10,7 +10,7 @@ type TonicResult<T> = Result<Response<T>, Status>;
 #[derive(Default)]
 pub struct ProfileService;
 
-impl crate::auth_impl::AuthenticatedEndpoints for ProfileService {
+impl crate::middleware::AuthenticatedEndpoints for ProfileService {
     fn authenticated_endpoints() -> Vec<&'static str> {
         vec!["EditProfile"]
     }
@@ -32,7 +32,7 @@ impl profile_service_server::ProfileService for ProfileService {
     }
 
     async fn edit_profile(&self, mut request: Request<EditProfileRequest>) -> TonicResult<()> {
-        let (txn, user) = crate::auth_impl::lookup_extensions(request.extensions_mut())?;
+        let (txn, user) = crate::middleware::lookup_extensions(request.extensions_mut())?;
 
         let mut profile = entity::user::Entity::find_related()
             .filter(entity::user::Column::Id.eq(user.id))
