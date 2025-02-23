@@ -20,17 +20,17 @@ env.update({
 
 server = sp.Popen(['cargo', 'run', '--bin', 'server'], env=env)
 
-while not (temp_dir/'logs').exists():
-    time.sleep(0.1)
-
-with open(temp_dir/'logs') as logs:
-    while 'Starting server...' not in logs.read():
-        continue
-
-sp.run(['cargo', 'test'] + sys.argv[1:], env=env)
-
-server.terminate()
 try:
+    while not (temp_dir/'logs').exists():
+        time.sleep(0.1)
+
+    with open(temp_dir/'logs') as logs:
+        while 'Starting server...' not in logs.read():
+            continue
+
+    sp.run(['cargo', 'test'] + sys.argv[1:], env=env)
+
+    server.terminate()
     server.wait()
-except KeyboardInterrupt:   # for cursor
-    pass
+except KeyboardInterrupt:
+    server.terminate()
