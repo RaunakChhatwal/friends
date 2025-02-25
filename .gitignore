@@ -1,4 +1,5 @@
 /target
+/target-host
 /.vscode
 /data.db
 /.env

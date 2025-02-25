@@ -28,7 +28,8 @@ try:
         while 'Starting server...' not in logs.read():
             continue
 
-    sp.run(['cargo', 'test'] + sys.argv[1:], env=env)
+    args = sys.argv[1:] if len(sys.argv) > 1 else ['--test', '*']
+    sp.run(['cargo', 'test'] + args, env=env)
 
     server.terminate()
     server.wait()
