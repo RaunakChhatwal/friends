@@ -1,18 +1,12 @@
 [workspace]
-members = [".", "migration"]
+members = [".", "migration", "client"]
 
 [package]
 name = "friends"
 version = "0.1.0"
 edition = "2024"
 
-[[bin]]
-name = "server"
-path = "src/server.rs"
-
-[[bin]]
-name = "friends"
-path = "src/client.rs"
+# Main binary is now src/main.rs by default, no need to specify
 
 [dependencies]
 anyhow = "1.0.95"
