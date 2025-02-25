@@ -1,9 +1,9 @@
 use crate::auth::*;
 use crate::entity;
-use crate::internal;
 use crate::middleware::{AuthenticatedEndpoints, Claims, JWT_SECRET};
 use crate::profile::*;
-use crate::util::{conn, to_internal_db_err};
+use crate::util::conn;
+use crate::{error_running_query, internal};
 use regex::Regex;
 use sea_orm::*;
 use tonic::{Request, Response, Status};
@@ -89,18 +89,18 @@ impl auth_service_server::AuthService for AuthService {
             .filter(entity::user::Column::Username.eq(username.trim()))
             .one(&*conn)
             .await
-            .map_err(to_internal_db_err)?
-            .ok_or_else(|| Status::not_found("Invalid username"))?;
+            .map_err(error_running_query!())?
+            .ok_or(Status::not_found("Invalid username"))?;
 
         // Verify password in a blocking task since bcrypt is CPU-intensive
         let verification_task = move || bcrypt::verify(password.trim(), &password_hash);
         let valid = tokio::task::spawn_blocking(verification_task)
             .await
-            .map_err(|_| internal!("Task join error"))?
-            .map_err(|_| Status::unauthenticated("Failed to verify password"))?;
+            .map_err(|error| internal!("Error joining task: {error}"))?
+            .map_err(|error| internal!("Password verification failed: {error}"))?;
 
         if !valid {
-            return Err(Status::unauthenticated("Invalid password"));
+            return Err(Status::unauthenticated("Incorrect password"));
         }
 
         // Generate JWT token
@@ -111,7 +111,7 @@ impl auth_service_server::AuthService for AuthService {
 
         let key = jsonwebtoken::EncodingKey::from_secret(JWT_SECRET.as_bytes());
         let token = jsonwebtoken::encode(&Default::default(), &claims, &key)
-            .map_err(|_| internal!("Failed to generate token"))?;
+            .map_err(|error| internal!("Failed to encode token: {error}"))?;
 
         Ok(Response::new(Token { token }))
     }
@@ -125,14 +125,15 @@ impl auth_service_server::AuthService for AuthService {
         let (bio, city, date_of_birth) = validate_profile(profile)?;
 
         // Start a transaction since we need to create both user and profile
-        let txn = conn.begin().await.map_err(to_internal_db_err)?;
+        let txn =
+            conn.begin().await.map_err(|error| internal!("Error starting transaction: {error}"))?;
 
         // Check if username already exists
         let existing_user = entity::user::Entity::find()
             .filter(entity::user::Column::Username.eq(username))
             .one(&txn)
             .await
-            .map_err(to_internal_db_err)?;
+            .map_err(error_running_query!())?;
 
         if existing_user.is_some() {
             return Err(Status::already_exists("Username already taken"));
@@ -142,8 +143,8 @@ impl auth_service_server::AuthService for AuthService {
         let hash_task = move || bcrypt::hash(password.trim(), bcrypt::DEFAULT_COST);
         let password_hash = tokio::task::spawn_blocking(hash_task)
             .await
-            .map_err(|_| internal!("Task join error"))?
-            .map_err(|_| internal!("Failed to hash password"))?;
+            .map_err(|error| internal!("Error joining task: {error}"))?
+            .map_err(|error| internal!("Failed to hash password: {error}"))?;
 
         // Create user first since profile now references it
         let uuid = uuid::Uuid::new_v4();
@@ -153,7 +154,7 @@ impl auth_service_server::AuthService for AuthService {
             password_hash: Set(password_hash),
             ..Default::default()
         };
-        let user = user.insert(&txn).await.map_err(to_internal_db_err)?;
+        let user = user.insert(&txn).await.map_err(error_running_query!())?;
 
         // Create profile with reference to user
         let profile = entity::profile::ActiveModel {
@@ -163,10 +164,10 @@ impl auth_service_server::AuthService for AuthService {
             user: Set(user.id),
             ..Default::default()
         };
-        profile.insert(&txn).await.map_err(to_internal_db_err)?;
+        profile.insert(&txn).await.map_err(error_running_query!())?;
 
         // Commit transaction
-        txn.commit().await.map_err(to_internal_db_err)?;
+        txn.commit().await.map_err(|error| internal!("Failed to commit transaction: {error}"))?;
 
         // Generate JWT token
         let claims = Claims {
@@ -176,7 +177,7 @@ impl auth_service_server::AuthService for AuthService {
 
         let key = jsonwebtoken::EncodingKey::from_secret(JWT_SECRET.as_bytes());
         let token = jsonwebtoken::encode(&Default::default(), &claims, &key)
-            .map_err(|_| internal!("Failed to generate token"))?;
+            .map_err(|error| internal!("Failed to encode token: {error}"))?;
 
         Ok(Response::new(Token { token }))
     }

@@ -1,10 +1,11 @@
 use crate::entity;
 use crate::internal;
-use crate::util::{conn, to_internal_db_err};
+use crate::util::conn;
 use atomic_take::AtomicTake;
+use futures::FutureExt;
 use sea_orm::*;
 use std::{collections::HashMap, env, pin::Pin, sync::Arc, task::Poll};
-use tonic::{Status, body::BoxBody};
+use tonic::{Code::Internal, Status, body::BoxBody};
 
 lazy_static::lazy_static! {
     pub static ref JWT_SECRET: String = env::var("JWT_SECRET").expect("JWT_SECRET must be set");
@@ -24,9 +25,9 @@ pub fn lookup_extensions(
         .as_ref()
         .map(AsRef::as_ref)
         .and_then(AtomicTake::take)
-        .ok_or(internal!("Resource from middleware not found"))?;
+        .ok_or(internal!("Transaction not present in request extensions"))?;
 
-    let user = extensions.remove().ok_or(internal!("Resource from middleware not found"))?;
+    let user = extensions.remove().ok_or(internal!("UUID not present in request extensions"))?;
 
     Ok((txn, user))
 }
@@ -63,12 +64,13 @@ async fn auth_interceptor<Body>(request: &mut http::Request<Body>) -> Result<(),
         Err(error) => return Err(Status::unauthenticated(error.to_string())),
     };
 
-    let txn = conn.begin().await.map_err(to_internal_db_err)?;
+    let txn =
+        conn.begin().await.map_err(|error| internal!("Error starting transaction: {error}"))?;
     let user = entity::user::Entity::find()
         .filter(entity::user::Column::Uuid.eq(uuid))
         .one(&txn)
         .await
-        .map_err(to_internal_db_err)?
+        .map_err(|error| internal!("Error running query: {error}"))?
         .ok_or(Status::not_found("Account not found"))?;
 
     let txn_extension = Arc::new(AtomicTake::new(txn)); // because Extensions::insert requires Clone and Send
@@ -126,5 +128,47 @@ impl<S> tower::Layer<S> for AuthLayer {
             authenticated_endpoints: Arc::clone(&self.authenticated_endpoints),
             inner: Arc::new(std::sync::Mutex::new(service)),
         }
+    }
+}
+
+#[derive(Clone)]
+pub struct InternalErrorMiddleware<S> {
+    inner: S,
+}
+
+fn intercept_internal_error(response: http::Response<BoxBody>) -> http::Response<BoxBody> {
+    return Status::from_header_map(response.headers())
+        .map(|status| status.code() == Internal)
+        .unwrap_or(false)
+        .then_some(Status::internal("An unexpected error occurred.").into_http())
+        .unwrap_or(response);
+}
+
+impl<S, Payload> tower::Service<http::Request<Payload>> for InternalErrorMiddleware<S>
+where
+    S: tower::Service<http::Request<Payload>, Response = http::Response<BoxBody>>,
+    S::Future: Send + 'static,
+{
+    type Response = S::Response;
+    type Error = S::Error;
+    type Future = Pin<Box<dyn Future<Output = Result<S::Response, S::Error>> + Send>>;
+
+    fn poll_ready(&mut self, cx: &mut std::task::Context<'_>) -> Poll<Result<(), Self::Error>> {
+        self.inner.poll_ready(cx)
+    }
+
+    fn call(&mut self, request: http::Request<Payload>) -> Self::Future {
+        Box::pin(self.inner.call(request).map(|result| result.map(intercept_internal_error)))
+    }
+}
+
+#[derive(Clone, Default)]
+pub struct InternalErrorLayer;
+
+impl<S> tower::Layer<S> for InternalErrorLayer {
+    type Service = InternalErrorMiddleware<S>;
+
+    fn layer(&self, service: S) -> Self::Service {
+        InternalErrorMiddleware { inner: service }
     }
 }

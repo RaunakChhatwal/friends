@@ -1,6 +1,7 @@
 use crate::entity;
-use crate::profile::*;
-use crate::util::{conn, to_internal_db_err};
+use crate::profile::{edit_profile_request::Field, *};
+use crate::util::conn;
+use crate::{error_running_query, internal};
 use chrono::Datelike;
 use sea_orm::*;
 use tonic::{Request, Response, Status};
@@ -24,7 +25,7 @@ impl profile_service_server::ProfileService for ProfileService {
             .filter(entity::user::Column::Username.eq(username.trim()))
             .one(&*conn)
             .await
-            .map_err(to_internal_db_err)?
+            .map_err(error_running_query!())?
             .ok_or(Status::not_found(format!("Username {username} not found")))?
             .into();
 
@@ -38,18 +39,18 @@ impl profile_service_server::ProfileService for ProfileService {
             .filter(entity::user::Column::Id.eq(user.id))
             .one(&txn)
             .await
-            .map_err(to_internal_db_err)?
-            .expect("Expected profile due to foreign key constraint") // panic on constraint violation
+            .map_err(error_running_query!())?
+            .ok_or(internal!("Expected profile for user {}", user.username))?
             .into_active_model();
 
-        match request.into_inner().update {
-            Some(edit_profile_request::Update::Bio(new_bio)) => profile.bio = Set(new_bio),
-            Some(edit_profile_request::Update::City(new_city)) => profile.city = Set(new_city),
+        match request.into_inner().field {
+            Some(Field::Bio(new_bio)) => profile.bio = Set(new_bio),
+            Some(Field::City(new_city)) => profile.city = Set(new_city),
             None => return Err(Status::invalid_argument("Either bio or city must be provided")),
         }
 
-        profile.update(&txn).await.map_err(to_internal_db_err)?;
-        txn.commit().await.map_err(to_internal_db_err)?;
+        profile.update(&txn).await.map_err(error_running_query!())?;
+        txn.commit().await.map_err(|error| internal!("Error commiting transaction: {error}"))?;
         return Ok(Response::new(()));
     }
 }

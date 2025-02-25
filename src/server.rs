@@ -6,7 +6,7 @@ mod entity;
 mod middleware;
 mod profile_impl;
 mod util;
-include!("mod.rs");
+include!("lib.rs");
 
 use anyhow::Result;
 use tracing_appender::rolling::{RollingFileAppender, Rotation};
@@ -27,7 +27,11 @@ macro_rules! add_services {
 
         let auth_layer = middleware::AuthLayer
             { authenticated_endpoints: ::std::sync::Arc::new(authenticated_endpoints) };
-        let mut server = $server.layer(tower::ServiceBuilder::new().layer(auth_layer).into_inner());
+        let mut server = $server
+            .layer(tower::ServiceBuilder::new()
+                .layer(middleware::InternalErrorLayer::default())
+                .layer(auth_layer)
+                .into_inner());
 
         $(
             let service =

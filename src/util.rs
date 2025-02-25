@@ -1,22 +1,31 @@
-use sea_orm::{Database, DatabaseConnection};
+use anyhow::Result;
+use sea_orm::{Database, DatabaseConnection, DbErr};
 
 #[macro_export]
 macro_rules! internal {
-    ($fmt:literal $(, $param:expr)*) => {
+    ($fmt:literal $(, $param:expr)*) => {{
+        tracing::error!($fmt $(, $param)*);
         tonic::Status::internal(format!($fmt $(, $param)*))
-    }
+    }}
 }
 
-fn connect_to_database() -> DatabaseConnection {
+// must be a macro to preserve tracing::error invocation location
+#[macro_export]
+macro_rules! error_running_query {
+    () => {
+        |error| {
+            tracing::error!("Error running query: {error}");
+            tonic::Status::internal(format!("Error running query: {error}"))
+        }
+    };
+}
+
+async fn connect_to_database() -> Result<DatabaseConnection, DbErr> {
     let database_url = std::env::var("DATABASE_URL").unwrap_or("sqlite://data.db?mode=rwc".into());
-    let future = Database::connect(database_url);
-    futures::executor::block_on(future).expect("Failed to connect to database")
+    Database::connect(&database_url).await
 }
 
 lazy_static::lazy_static! {
-    pub static ref conn: DatabaseConnection = connect_to_database();
-}
-
-pub fn to_internal_db_err(_error: impl std::error::Error) -> tonic::Status {
-    tonic::Status::internal("Database error") // keep internal error intentionally vague
+    pub static ref conn: DatabaseConnection = futures::executor::block_on(connect_to_database())
+        .expect("Failed to connection to database");
 }

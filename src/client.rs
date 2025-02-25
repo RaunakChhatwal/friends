@@ -1,6 +1,6 @@
-include!("mod.rs");
+include!("lib.rs");
 
-use crate::profile::edit_profile_request;
+use crate::profile::edit_profile_request::Field;
 use anyhow::{Context, Result};
 use auth::{LoginRequest, SignUpRequest, auth_service_client::AuthServiceClient};
 use chrono::{Datelike, NaiveDate};
@@ -180,8 +180,7 @@ async fn edit_field(
     match choice {
         1 => {
             let bio = get_user_input("Enter new bio: ")?;
-            let edit_request =
-                EditProfileRequest { update: Some(edit_profile_request::Update::Bio(bio)) };
+            let edit_request = EditProfileRequest { field: Some(Field::Bio(bio)) };
             let mut request = Request::new(edit_request);
             request.metadata_mut().insert("authorization", auth_header.clone());
 
@@ -192,8 +191,7 @@ async fn edit_field(
         }
         2 => {
             let city = get_user_input("Enter new city: ")?;
-            let edit_request =
-                EditProfileRequest { update: Some(edit_profile_request::Update::City(city)) };
+            let edit_request = EditProfileRequest { field: Some(Field::City(city)) };
             let mut request = Request::new(edit_request);
             request.metadata_mut().insert("authorization", auth_header.clone());
 
