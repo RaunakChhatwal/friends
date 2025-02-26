@@ -1,6 +1,6 @@
 use crate::util::{LocalStorage, format_error, get_user_input};
 use anyhow::Result;
-use friends::auth::{LoginRequest, SignUpRequest, auth_service_client::AuthServiceClient};
+use friends::auth::{LogInRequest, SignUpRequest, auth_service_client::AuthServiceClient};
 use friends::profile;
 use tonic::transport::Channel;
 
@@ -17,8 +17,8 @@ pub async fn log_in() -> Result<Option<LocalStorage>> {
     let username = get_user_input("Enter username: ")?;
     let password = get_user_input("Enter password: ")?;
 
-    let login_request = LoginRequest { username: username.clone(), password };
-    match auth_client.login(login_request).await {
+    let login_request = LogInRequest { username: username.clone(), password };
+    match auth_client.log_in(login_request).await {
         Ok(response) => {
             println!("Successfully logged in!");
             let token = response.into_inner().token;

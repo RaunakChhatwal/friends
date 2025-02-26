@@ -49,13 +49,13 @@ pub async fn sign_up(
 }
 
 pub async fn log_in(username: impl AsRef<str>, password: impl AsRef<str>) -> Result<Token, Status> {
-    let request = LoginRequest {
+    let request = LogInRequest {
         username: username.as_ref().to_string(),
         password: password.as_ref().to_string(),
     };
 
     let mut client = AuthServiceClient::new(channel().await);
-    let response = client.login(Request::new(request)).await?;
+    let response = client.log_in(Request::new(request)).await?;
     Ok(response.into_inner())
 }
 

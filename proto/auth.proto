@@ -5,11 +5,11 @@ package auth;
 import "proto/profile.proto";
 
 service AuthService {
-    rpc Login (LoginRequest) returns (Token);
+    rpc LogIn (LogInRequest) returns (Token);
     rpc SignUp (SignUpRequest) returns (Token);
 }
 
-message LoginRequest {
+message LogInRequest {
     string username = 1;
     string password = 2;
 }

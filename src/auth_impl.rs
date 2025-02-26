@@ -177,8 +177,8 @@ async fn sign_up(username: &str, password: String, profile: Option<Profile>) -> 
 
 #[tonic::async_trait]
 impl auth_service_server::AuthService for AuthService {
-    async fn login(&self, request: Request<LoginRequest>) -> TonicResult<Token> {
-        let LoginRequest { username, password } = request.into_inner();
+    async fn log_in(&self, request: Request<LogInRequest>) -> TonicResult<Token> {
+        let LogInRequest { username, password } = request.into_inner();
         login(&username, password).await.map(Response::new).map_err(anyhow_to_status)
     }
 
