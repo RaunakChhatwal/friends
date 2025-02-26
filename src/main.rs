@@ -29,7 +29,7 @@ macro_rules! add_services {
             { authenticated_endpoints: ::std::sync::Arc::new(authenticated_endpoints) };
         let mut server = $server
             .layer(tower::ServiceBuilder::new()
-                .layer(middleware::InternalErrorLayer::default())
+                .layer(middleware::ErrorLoggingLayer::default())
                 .layer(auth_layer)
                 .into_inner());
 

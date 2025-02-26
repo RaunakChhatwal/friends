@@ -1,8 +1,9 @@
-use crate::entity;
-use crate::internal;
 use crate::util::conn;
+use crate::{entity, util::anyhow_to_status};
+use anyhow::{Context, Result, bail};
 use atomic_take::AtomicTake;
 use futures::FutureExt;
+use http::{Request, Response};
 use sea_orm::*;
 use std::{collections::HashMap, env, pin::Pin, sync::Arc, task::Poll};
 use tonic::{Code::Internal, Status, body::BoxBody};
@@ -19,15 +20,15 @@ pub trait AuthenticatedEndpoints {
 
 pub fn lookup_extensions(
     extensions: &mut tonic::Extensions,
-) -> Result<(DatabaseTransaction, entity::user::Model), Status> {
+) -> Result<(DatabaseTransaction, entity::user::Model)> {
     let txn = extensions
         .remove::<Arc<AtomicTake<_>>>()
         .as_ref()
         .map(AsRef::as_ref)
         .and_then(AtomicTake::take)
-        .ok_or(internal!("Transaction not present in request extensions"))?;
+        .context("Transaction not present in request extensions")?;
 
-    let user = extensions.remove().ok_or(internal!("UUID not present in request extensions"))?;
+    let user = extensions.remove().context("UUID not present in request extensions")?;
 
     Ok((txn, user))
 }
@@ -44,7 +45,7 @@ pub struct Claims {
     pub sub: uuid::Uuid, // subject
 }
 
-async fn auth_interceptor<Body>(request: &mut http::Request<Body>) -> Result<(), Status> {
+async fn auth_interceptor<Body>(request: &mut Request<Body>) -> Result<()> {
     let header = request
         .headers()
         .get("authorization")
@@ -54,23 +55,21 @@ async fn auth_interceptor<Body>(request: &mut http::Request<Body>) -> Result<(),
 
     let prefix = "Bearer ";
     if !header.starts_with(prefix) {
-        return Err(Status::unauthenticated("Invalid bearer token"));
+        bail!(Status::unauthenticated("Invalid bearer token"));
     }
     let token = &header[prefix.len()..];
 
     let key = jsonwebtoken::DecodingKey::from_secret(JWT_SECRET.as_bytes());
     let uuid = match jsonwebtoken::decode::<Claims>(token, &key, &Default::default()) {
         Ok(token_data) => token_data.claims.sub,
-        Err(error) => return Err(Status::unauthenticated(error.to_string())),
+        Err(error) => bail!(Status::unauthenticated(error.to_string())),
     };
 
-    let txn =
-        conn.begin().await.map_err(|error| internal!("Error starting transaction: {error}"))?;
+    let txn = conn.begin().await?;
     let user = entity::user::Entity::find()
         .filter(entity::user::Column::Uuid.eq(uuid))
         .one(&txn)
-        .await
-        .map_err(|error| internal!("Error running query: {error}"))?
+        .await?
         .ok_or(Status::not_found("Account not found"))?;
 
     let txn_extension = Arc::new(AtomicTake::new(txn)); // because Extensions::insert requires Clone and Send
@@ -79,9 +78,9 @@ async fn auth_interceptor<Body>(request: &mut http::Request<Body>) -> Result<(),
     return Ok(());
 }
 
-impl<S, Payload> tower::Service<http::Request<Payload>> for AuthMiddleware<S>
+impl<S, Payload> tower::Service<Request<Payload>> for AuthMiddleware<S>
 where
-    S: tower::Service<http::Request<Payload>, Response = http::Response<BoxBody>> + Send + 'static,
+    S: tower::Service<Request<Payload>, Response = Response<BoxBody>> + Send + 'static,
     S::Future: Send + 'static,
     Payload: Send + 'static,
 {
@@ -93,7 +92,7 @@ where
         self.inner.lock().unwrap().poll_ready(cx)
     }
 
-    fn call(&mut self, mut request: http::Request<Payload>) -> Self::Future {
+    fn call(&mut self, mut request: Request<Payload>) -> Self::Future {
         let mut authenticate = false;
         if let ["", service, endpoint] = request.uri().path().split('/').collect::<Vec<_>>()[..] {
             if let Some(endpoints) = self.authenticated_endpoints.get(service) {
@@ -106,7 +105,7 @@ where
         let inner = Arc::clone(&self.inner);
         Box::pin(async move {
             if authenticate && let Err(denial) = auth_interceptor(&mut request).await {
-                return Ok(denial.into_http());
+                return Ok(anyhow_to_status(denial).into_http());
             }
 
             let future = inner.lock().unwrap().call(request); // don't await while lock held
@@ -132,21 +131,27 @@ impl<S> tower::Layer<S> for AuthLayer {
 }
 
 #[derive(Clone)]
-pub struct InternalErrorMiddleware<S> {
+pub struct ErrorLoggingMiddleware<S> {
     inner: S,
 }
 
-fn intercept_internal_error(response: http::Response<BoxBody>) -> http::Response<BoxBody> {
-    return Status::from_header_map(response.headers())
-        .map(|status| status.code() == Internal)
-        .unwrap_or(false)
-        .then_some(Status::internal("An unexpected error occurred.").into_http())
-        .unwrap_or(response);
+fn log_and_sanitize_error(response: Response<BoxBody>, path: &str) -> Response<BoxBody> {
+    if let Some(status) = Status::from_header_map(response.headers()) {
+        if status.code() == Internal {
+            // Log the internal error with service and endpoint
+            tracing::error!("{path}: {}", status.message());
+
+            // Return sanitized error to the client
+            return Status::internal("An unexpected error occurred.").into_http();
+        }
+    }
+
+    response
 }
 
-impl<S, Payload> tower::Service<http::Request<Payload>> for InternalErrorMiddleware<S>
+impl<S, Payload> tower::Service<Request<Payload>> for ErrorLoggingMiddleware<S>
 where
-    S: tower::Service<http::Request<Payload>, Response = http::Response<BoxBody>>,
+    S: tower::Service<Request<Payload>, Response = Response<BoxBody>>,
     S::Future: Send + 'static,
 {
     type Response = S::Response;
@@ -157,18 +162,25 @@ where
         self.inner.poll_ready(cx)
     }
 
-    fn call(&mut self, request: http::Request<Payload>) -> Self::Future {
-        Box::pin(self.inner.call(request).map(|result| result.map(intercept_internal_error)))
+    fn call(&mut self, request: Request<Payload>) -> Self::Future {
+        // Store the path for later use in error logging
+        let path = request.uri().path().to_string();
+        let future = self
+            .inner
+            .call(request)
+            .map(move |result| result.map(|response| log_and_sanitize_error(response, &path)));
+
+        Box::pin(future)
     }
 }
 
 #[derive(Clone, Default)]
-pub struct InternalErrorLayer;
+pub struct ErrorLoggingLayer;
 
-impl<S> tower::Layer<S> for InternalErrorLayer {
-    type Service = InternalErrorMiddleware<S>;
+impl<S> tower::Layer<S> for ErrorLoggingLayer {
+    type Service = ErrorLoggingMiddleware<S>;
 
     fn layer(&self, service: S) -> Self::Service {
-        InternalErrorMiddleware { inner: service }
+        ErrorLoggingMiddleware { inner: service }
     }
 }

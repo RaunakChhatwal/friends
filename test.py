@@ -18,7 +18,7 @@ env.update({
     'PORT': '8000'
 })
 
-server = sp.Popen(['cargo', 'run', '--bin', 'server'], env=env)
+server = sp.Popen(['cargo', 'run'], env=env)
 
 try:
     while not (temp_dir/'logs').exists():
